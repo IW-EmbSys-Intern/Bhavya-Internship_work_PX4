@@ -28,7 +28,9 @@ setup(
             'takeoff_NGCS = drone_control.takeoff_no_GCS:main',
             'square = drone_control.square_ros2:main',
             'square2 = drone_control.square_ros2_2:main',
-            'circle = drone_control.circle_ros2:main'
+            'circle = drone_control.circle_ros2:main',
+            'circle2 = drone_control.circle_ros2_2:main',
+            'eight = drone_control.8_figure_ros2:main'
         ],
     },
 )
