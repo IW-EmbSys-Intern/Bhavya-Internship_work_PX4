@@ -31,14 +31,6 @@ class SquareROS2(Node):
         self.cmd_pub = self.create_publisher(
             VehicleCommand, "/fmu/in/vehicle_command", 10
         )
-
-        # Subscriber
-        # self.odom_sub = self.create_subscription(
-        #     VehicleOdometry,
-        #     "/fmu/out/vehicle_odometry",
-        #     self.odom_callback,
-        #     10
-        # )
         
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -76,7 +68,7 @@ class SquareROS2(Node):
         ]
 
         # IMPORTANT tuning
-        self.wp_tolerance = 3.0
+        self.wp_tolerance = 1.5
 
         self.timer = self.create_timer(0.1, self.loop)
 
@@ -87,9 +79,9 @@ class SquareROS2(Node):
     # ---------------- CALLBACK ----------------
     
     def odom_callback(self, msg):
-        print(msg)
+        # print(msg)
         try:
-            print("ODOM RECEIVED")
+            # print("ODOM RECEIVED")
 
             self.current_x = msg.x
             self.current_y = msg.y
@@ -98,7 +90,7 @@ class SquareROS2(Node):
 
             if not self.odom_ready:
                 self.odom_ready = True
-                self.get_logger().info("Odometry ONLINE")
+                # self.get_logger().info("Odometry ONLINE")
 
         except Exception as e:
             print("ODOM ERROR:", e)
@@ -113,9 +105,9 @@ class SquareROS2(Node):
     def compute_yaw_to_waypoint(self, x, y, tx, ty):
         yaw = math.atan2(ty - y, tx - x)
         # self.get_logger().info(f"x={self.current_x}, y={self.current_y}")
-        self.get_logger().info(
-            f"pos=({self.current_x:.2f}, {self.current_y:.2f})"
-        )
+        # self.get_logger().info(
+        #     f"pos=({self.current_x:.2f}, {self.current_y:.2f})"
+        # )
         return yaw
 
     # ---------------- PX4 MSGS ----------------
@@ -193,7 +185,7 @@ class SquareROS2(Node):
                 self.get_logger().info("ENTER MISSION")
 
         # ---------------- MISSION ----------------
-        elif self.state == "MISSION":
+        # elif self.state == "MISSION":
 
             self.publish_setpoint(
                 self.waypoints[self.wp_index][0],
@@ -222,7 +214,56 @@ class SquareROS2(Node):
                     self.send_command(21)
                     self.state = "LANDING"
                     
-                    
+        # ---------------- MISSION 2.0 --------------- 
+        elif self.state == "MISSION":
+
+            tx, ty, tz = self.waypoints[self.wp_index]
+
+            self.publish_setpoint(
+                tx,
+                ty,
+                tz,
+                self.compute_yaw_to_waypoint(
+                    self.current_x,
+                    self.current_y,
+                    tx,
+                    ty
+                )
+            )
+        
+            dist = self.distance_to_wp(
+                self.current_x,
+                self.current_y,
+                tx,
+                ty
+            )
+
+            # Drone reached waypoint
+            if dist < self.wp_tolerance:
+
+                self.hover_counter += 1
+
+                # 2 seconds at 10 Hz
+                print(self.hover_counter)
+                if self.hover_counter >= 30:
+
+                    self.hover_counter = 0
+                    self.wp_index += 1
+
+                    if self.wp_index < len(self.waypoints):
+                        self.get_logger().info(
+                            f"Moving to WP {self.wp_index}"
+                        )
+                    else:
+                        self.get_logger().info(
+                            "Square complete → LANDING"
+                        )
+                        self.send_command(21)
+                        self.state = "LANDING"
+
+            else:
+                # Reset hover timer while travelling
+                self.hover_counter = 0       
 
         # ---------------- HOLD ----------------
         elif self.state == "HOLD":
