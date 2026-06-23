@@ -21,11 +21,8 @@ class DroneTeleOp(Node):
 
         self.state = "IDLE"
         self.mode = "IDLE"
-        
-        self.mission_type = "CIRCLE"
-
-        self.target_altitude = -50.0
-
+    
+        self.target_altitude = -10.0
 
         # hold position
         self.hold_initialized = False
@@ -46,13 +43,12 @@ class DroneTeleOp(Node):
         # mission control
         self.angle = 0.0
         self.step = 0
+        self.mission_select_mode = False
+        self.mission_type = None
 
-        # Takeoff Control
-        self.arm_time = None
-        self.waiting_for_takeoff = False
-        self.takeoff_x = 0.0
-        self.takeoff_y = 0.0
-        self.takeoff_done = False
+        # Mission system
+        self.mission_time = 0.0
+        self.mission_active = False
 
         # Circle Mission
         self.circle_radius = 25.0 #meters
@@ -61,7 +57,25 @@ class DroneTeleOp(Node):
 
         self.circle_center_x = 0.0
         self.circle_center_y = 0.0
-        self.circle_altitude = -40.0
+        self.circle_altitude = -10.0
+
+        # Square mission
+        self.square_waypoints = []
+        self.square_index = 0
+        self.square_hover_counter = 0
+
+        # Figure 8
+        self.fig8_center_x = 0.0
+        self.fig8_center_y = 0.0
+        self.fig8_omega = 0.3
+
+        # Takeoff Control
+        self.arm_time = None
+        self.waiting_for_takeoff = False
+        self.takeoff_x = 0.0
+        self.takeoff_y = 0.0
+        self.takeoff_done = False
+
 
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -78,7 +92,6 @@ class DroneTeleOp(Node):
         self.keyboard_listener.start()
 
         
-
         self.timer = self.create_timer(0.1, self.loop)
 
     
@@ -131,12 +144,40 @@ class DroneTeleOp(Node):
     def on_key_press(self, key):
         print("KEY EVENT TRIGGERED:", key)
         try:
+            if not hasattr(key, "char") or key.char is None:
+                return
             k = key.char.lower()
+
+            # -------------------------
+            # MISSION SELECTION MODE
+            # -------------------------
+            if self.mission_select_mode:
+
+                if k == '1':
+                    self.mission_type = "CIRCLE"
+                    self.start_mission()
+                    self.mission_select_mode = False
+                    print("MISSION SELECTED: CIRCLE")
+
+                elif k == '2':
+                    self.mission_type = "SQUARE"
+                    self.start_mission()
+                    self.mission_select_mode = False
+                    print("MISSION SELECTED: SQUARE")
+
+                elif k == '3':
+                    self.mission_type = "FIGURE8"
+                    self.start_mission()
+                    self.mission_select_mode = False
+                    print("MISSION SELECTED: FIGURE-8")
+
+                return  # IMPORTANT: block other keys during selection
 
             if k == 'a':
                 print('Arming')
                 self.engage_offboard()
                 self.arm()
+
             elif k == 't':
                 print('Taking-Off')
                 # if self.state == "ARMED_IDLE":
@@ -147,19 +188,28 @@ class DroneTeleOp(Node):
                     self.takeoff()
 
             elif k == 'm':
-                # self.state = "MISSION"
-                self.start_mission()
+                print('\nSelect Mission:')
+                print("1: CIRCLE")
+                print("2: SQUARE")
+                print("3: FIGURE-8")
+
+                self.mission_select_mode = True
+
             elif k == 'l':
                 print('Landing')
                 self.land()
+
             elif k =='r':
                 self.rtl()
+
             elif k == 'd':
                 print('Disarming')
                 self.disarm()
+
             elif k == 'h':
                 print('Hold')
                 self.capture_and_hold()
+                
         except Exception as e:
             print("[KEYBOARD ERROR]", e)
     
@@ -221,14 +271,131 @@ class DroneTeleOp(Node):
 
     def start_mission(self):
         self.state = "MISSION"
+        self.mission_time = 0.0
+        
+        self.mission_active = True
 
         self.circle_center_x = self.current_x
         self.circle_center_y = self.current_y
 
-        self.hold_initialized = False
-        self.takeoff_done = False
+        # square init
+        L = 20.0
+        self.square_waypoints = [
+            (self.current_x, self.current_y),
+            (self.current_x + L, self.current_y),
+            (self.current_x + L, self.current_y + L),
+            (self.current_x, self.current_y + L),
+            (self.current_x, self.current_y),
+        ]
+        self.square_index = 0
+        self.square_hover_counter = 0
 
-        self.circle_angle = 0.0
+        #figure 8 init
+        self.fig8_center_x = self.current_x
+        self.fig8_center_y = self.current_y
+     
+    def get_mission_setpoint(self):
+        self.mission_time += 0.1
+        t = self.mission_time
+
+        # -------------------------
+        # CIRCLE
+        # -------------------------
+        if self.mission_type == "CIRCLE":
+            x = self.circle_center_x + self.circle_radius * math.cos(self.circle_speed * t)
+            y = self.circle_center_y + self.circle_radius * math.sin(self.circle_speed * t)
+
+            vx = -self.circle_radius * self.circle_speed * math.sin(self.circle_speed * t)
+            vy =  self.circle_radius * self.circle_speed * math.cos(self.circle_speed * t)
+
+            z = self.circle_altitude
+            yaw = math.atan2(vy, vx)
+
+            return x, y, z, yaw
+
+        # -------------------------
+        # FIGURE 8
+        # -------------------------
+        elif self.mission_type == "FIGURE8":
+
+            omega = self.fig8_omega
+
+            x = self.fig8_center_x + self.circle_radius * math.sin(omega * t)
+            y = self.fig8_center_y + (self.circle_radius / 2) * math.sin(2 * omega * t)
+
+            vx = self.circle_radius * omega * math.cos(omega * t)
+            vy = self.circle_radius * omega * math.cos(2 * omega * t)
+
+            z = self.circle_altitude
+            yaw = math.atan2(vy, vx)
+
+            return x, y, z, yaw
+        
+        # -------------------------
+        # SQUARE
+        # -------------------------
+        # elif self.mission_type == "SQUARE":
+
+        #     wp = self.square_waypoints
+
+        #     i = self.square_index
+        #     next_i = (i + 1) % len(wp)
+
+        #     x1, y1 = wp[i]
+        #     x2, y2 = wp[next_i]
+
+        #     alpha = min(self.square_hover_counter / 50.0, 1.0)
+
+        #     x = x1 + alpha * (x2 - x1)
+        #     y = y1 + alpha * (y2 - y1)
+        #     z = self.circle_altitude
+
+        #     vx = x2 - x1
+        #     vy = y2 - y1
+        #     yaw = math.atan2(vy, vx)
+
+        #     return x, y, z, yaw
+        elif self.mission_type == "SQUARE":
+            wp = self.square_waypoints
+
+            i = self.square_index
+            next_i = (i + 1) % len(wp)
+
+            x1, y1 = wp[i]
+            x2, y2 = wp[next_i]
+
+            # progress along segment
+            step_size = 0.02   # smoothness control (IMPORTANT)
+            self.square_hover_counter += step_size
+
+            alpha = self.square_hover_counter
+
+            x = x1 + alpha * (x2 - x1)
+            y = y1 + alpha * (y2 - y1)
+            z = self.circle_altitude
+
+            vx = x2 - x1
+            vy = y2 - y1
+            yaw = math.atan2(vy, vx)
+
+            # -------------------------
+            # segment completion logic
+            # -------------------------
+            if self.square_hover_counter >= 1.0:
+                self.square_hover_counter = 0.0
+                self.square_index += 1
+
+                # loop or finish
+                if self.square_index >= len(wp) - 1:
+                    self.square_index = 0  # or stop mission
+
+            return x, y, z, yaw
+
+
+        #Fallback Safety
+        return self.current_x, self.current_y, self.current_z, 0.0
+            
+
 
     def capture_and_hold(self):
         self.hold_x = self.last_setpoint_x
@@ -305,16 +472,7 @@ class DroneTeleOp(Node):
 
         elif self.state == "MISSION":
 
-            self.circle_angle += self.circle_speed * 0.1
-
-            x = self.circle_center_x + self.circle_radius * math.cos(self.circle_angle)    
-            y = self.circle_center_y + self.circle_radius * math.sin(self.circle_angle)
-            z = self.circle_altitude
-
-            vx = -self.circle_radius * self.circle_speed * math.sin(self.circle_angle)
-            vy = self.circle_radius * self.circle_speed * math.cos(self.circle_angle)
-
-            self.yaw = math.atan2(vy, vx)
+            x, y, z, yaw = self.get_mission_setpoint()
 
             self.last_setpoint_x = x
             self.last_setpoint_y = y
@@ -324,7 +482,7 @@ class DroneTeleOp(Node):
             msg.timestamp = self.get_time()
 
             msg.position = [x, y, z]
-            msg.yaw = self.yaw
+            msg.yaw = yaw
 
             self.hold_setpoint_publisher.publish(msg)
 
