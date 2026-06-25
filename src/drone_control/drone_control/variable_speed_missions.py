@@ -1,3 +1,12 @@
+#!/usr/bin/env python3
+
+'''
+
+TUNE ACCELERATION RATE (DISTANCE)
+
+'''
+
+
 import rclpy
 from rclpy.node import Node
 import math
@@ -61,16 +70,17 @@ class WaypointTrajectoryNode(Node):
         self.vx_smooth = 0.0
         self.vy_smooth = 0.0
         self.vz_smooth = 0.0
-        self.alpha = 0.2   # smoothing factor
+        self.alpha = 0.05   # smoothing factor
         self.ref_set = False
         self.prev_pos = None
         self.next_pos = None
+        self.leg_start_pos = None
 
         self.waypoints = [
             {"pos": [0, 0, -15], "vmax": 3.0, "hold": 3},
-            {"pos": [30, -20, -15], "vmax": 5.0, "hold": 5},
-            {"pos": [100, 30, -15], "vmax": 10.0, "hold": 5},
-            {"pos": [30, 80, -15], "vmax": 15.0, "hold": 5},
+            {"pos": [100, -20, -15], "vmax": 5.0, "hold": 5},
+            {"pos": [200, 30, -15], "vmax": 10.0, "hold": 5},
+            {"pos": [300, 100, -15], "vmax": 15.0, "hold": 5},
         ]
 
         self.land_z = 0.0
@@ -169,6 +179,9 @@ class WaypointTrajectoryNode(Node):
 
             if self.distance(self.position, target) < 0.5:
                 self.get_logger().info("Takeoff complete → WP1")
+
+                self.leg_start_pos = self.position.copy()
+
                 self.state = "WP1"
 
         # ================= WAYPOINTS (VELOCITY CONTROL) =================
@@ -186,15 +199,36 @@ class WaypointTrajectoryNode(Node):
                 target[2] - self.position[2],
             ]
 
+
+
             dist = max(math.sqrt(sum(d*d for d in direction)), 1e-3)
+            total_dist = max(
+                self.distance(self.leg_start_pos, target),
+                1e-3
+            )
 
-            # clamp requested speed
-            speed = min(vmax, self.max_cmd_speed)
+            remaining = dist
+            travelled = total_dist - remaining
 
-            # normalize + apply speed
+            accel_dist = 5
+            decel_dist = max(25.0, vmax * 3.0)
+
+            speed_accel = vmax * min(1.0, travelled / accel_dist)
+
+            speed_decel = vmax * min(1.0, remaining / decel_dist)
+
+            speed = min(speed_accel, speed_decel, vmax)
+
+            # prevent stalling
+            speed = max(speed, 0.5)
+
             vx = direction[0] / dist * speed
             vy = direction[1] / dist * speed
             vz = direction[2] / dist * speed
+
+            net_vel = math.sqrt(vx**2 + vy**2)
+
+            self.get_logger().info(f'Alt:{self.position[2]:.2f}, VX: {vx:.2f}, VY: {vy:.2f}, Net: {net_vel:.2f}')
 
             # ✅ ADD YAW (face direction of motion)
             yaw = math.atan2(direction[1], direction[0])
@@ -206,14 +240,19 @@ class WaypointTrajectoryNode(Node):
 
             self.publish_velocity(self.vx_smooth, self.vy_smooth, self.vz_smooth, yaw)
 
-            if dist < 0.6:
+            if dist < 3.0:
                 self.state_start_time = self.get_clock().now()
+                self.get_logger().info(
+                    f"Reached WP with speed cmd = {speed:.2f}"
+                )
                 self.state = f"HOLD{idx+1}"
 
         # ================= HOLD =================
         elif self.state.startswith("HOLD"):
             idx = int(self.state[-1]) - 1
             wp = self.waypoints[idx]
+
+            self.get_logger().info("Holding at location")
 
             # hover in place
             self.publish_position(*wp["pos"])
@@ -222,16 +261,23 @@ class WaypointTrajectoryNode(Node):
 
             if elapsed > wp["hold"]:
                 if self.state == "HOLD1":
+                    self.leg_start_pos = self.position.copy()
                     self.state = "WP2"
+
                 elif self.state == "HOLD2":
+                    self.leg_start_pos = self.position.copy()
                     self.state = "WP3"
+
                 elif self.state == "HOLD3":
+                    self.leg_start_pos = self.position.copy()
                     self.state = "WP4"
+
                 elif self.state == "HOLD4":
                     self.state = "LAND"
 
         # ================= LAND =================
         elif self.state == "LAND":
+
 
             target = [self.position[0], self.position[1], self.land_z]
 
@@ -249,6 +295,7 @@ class WaypointTrajectoryNode(Node):
 
             yaw = math.atan2(direction[1], direction[0])
             self.publish_velocity(vx, vy, vz, yaw)
+            self.get_logger().info(f'Landing, vz: {vz:.2f},  Alt:{self.position[2]:.2f}')
 
             if dist < 0.3:
                 self.get_logger().info("Landing complete.")
